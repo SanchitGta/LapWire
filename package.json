@@ -1,0 +1,14 @@
+{
+  "name": "lapwire",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MindLap Slack ops app for meta engineers — empty scaffold (v0.1).",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
