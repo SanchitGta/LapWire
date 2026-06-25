@@ -1,4 +1,5 @@
 import { createAuthClient, type AuthClient } from "./auth.js";
+import { registerLifecycleHandlers, type LifecycleDependencies } from "./lifecycle/index.js";
 import { registerLinkHandlers, type LinkDependencies, type MetaAppLike } from "./link/index.js";
 import { createLinkStore, type LinkStore } from "./store.js";
 
@@ -42,12 +43,24 @@ export function registerMetaHandlers(app: MetaAppLike, dependencies: RuntimeDepe
   });
 
   registerLinkHandlers(app, dependencies);
+  if (
+    "metaBaseUrl" in dependencies &&
+    typeof dependencies.metaBaseUrl === "string" &&
+    dependencies.metaBaseUrl.length > 0 &&
+    "metaOrg" in dependencies &&
+    typeof dependencies.metaOrg === "string" &&
+    dependencies.metaOrg.length > 0
+  ) {
+    registerLifecycleHandlers(app, dependencies as RuntimeDependencies & LifecycleDependencies);
+  }
 }
 
 export type CreateRuntimeOptions = {
   apiBase: string;
   dbPath: string;
   encryptionKey: string;
+  metaBaseUrl?: string;
+  metaOrg?: string;
   now?: () => Date;
 };
 
@@ -65,6 +78,8 @@ export function createRuntimeDependencies(options: CreateRuntimeOptions): Runtim
     authClient,
     store,
     now: options.now,
+    ...(options.metaBaseUrl ? { metaBaseUrl: options.metaBaseUrl } : {}),
+    ...(options.metaOrg ? { metaOrg: options.metaOrg } : {}),
     commandHandlers: {},
   };
 }
