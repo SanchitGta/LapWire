@@ -19,11 +19,26 @@ type SlackModalViewsClient = SlackViewsClient & {
 
 type SlackChatClient = {
   postEphemeral: (payload: unknown) => Promise<unknown> | unknown;
+  update?: (payload: unknown) => Promise<unknown> | unknown;
+  postMessage?: (payload: unknown) => Promise<unknown> | unknown;
+};
+
+export type ActionBody = {
+  user: { id: string };
+  channel?: { id: string };
+  message?: { ts: string };
+  actions: Array<{
+    action_id: string;
+    value?: string;
+    block_id?: string;
+  }>;
+  trigger_id: string;
 };
 
 export type MetaAppLike = {
   command: (name: string, handler: (args: CommandHandlerArgs) => Promise<void>) => void;
   view: (callbackId: string, handler: (args: ViewHandlerArgs) => Promise<void>) => void;
+  action?: (actionId: string, handler: (args: ActionHandlerArgs) => Promise<void>) => void;
 };
 
 export type CommandHandlerArgs = {
@@ -37,6 +52,18 @@ export type CommandHandlerArgs = {
   };
   client: {
     views: SlackViewsClient;
+    chat?: SlackChatClient;
+  };
+  logger?: SlackLogger;
+};
+
+export type ActionHandlerArgs = {
+  ack: () => Promise<void> | void;
+  body: ActionBody;
+  action: ActionBody["actions"][number];
+  client: {
+    views: SlackModalViewsClient;
+    chat: SlackChatClient;
   };
   logger?: SlackLogger;
 };
@@ -55,7 +82,11 @@ export type ViewHandlerArgs = {
           Record<
             string,
             {
+              type?: string;
               value?: string;
+              selected_option?: { value: string };
+              selected_options?: Array<{ value: string }>;
+              selected_conversation?: string;
             }
           >
         >;

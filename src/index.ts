@@ -1,4 +1,6 @@
 import { createAuthClient, type AuthClient } from "./auth.js";
+import { registerConfigHandlers, type ConfigDependencies } from "./config/index.js";
+import { registerLifecycleHandlers, type LifecycleDependencies } from "./lifecycle/index.js";
 import { registerLinkHandlers, type LinkDependencies, type MetaAppLike } from "./link/index.js";
 import type { MetaClient } from "./metaClient.js";
 import { registerStatusHandlers } from "./status/index.js";
@@ -35,11 +37,15 @@ export function registerMetaHandlers(app: MetaAppLike, dependencies: RuntimeDepe
   registerLinkHandlers(app, dependencies);
 
   if (dependencies.metaBaseUrl && dependencies.metaOrg) {
-    registerStatusHandlers(app, {
+    const metaDeps = {
       ...dependencies,
       metaBaseUrl: dependencies.metaBaseUrl,
       metaOrg: dependencies.metaOrg,
-    });
+    };
+
+    registerStatusHandlers(app, metaDeps);
+    registerLifecycleHandlers(app, metaDeps as RuntimeDependencies & LifecycleDependencies);
+    registerConfigHandlers(app, metaDeps as RuntimeDependencies & ConfigDependencies);
   }
 
   app.command("/meta", async (args: MetaCommandArgs) => {
@@ -49,7 +55,7 @@ export function registerMetaHandlers(app: MetaAppLike, dependencies: RuntimeDepe
     if (!handler) {
       await args.ack();
       await args.respond({
-        text: "Available subcommands: link, whoami, unlink, fleet, status",
+        text: "Available subcommands: link, whoami, unlink, fleet, status, start, stop, rearm, config",
       });
       return;
     }
@@ -83,6 +89,8 @@ export function createRuntimeDependencies(options: CreateRuntimeOptions): Runtim
     metaBaseUrl: options.metaBaseUrl,
     metaOrg: options.metaOrg,
     now: options.now,
+    ...(options.metaBaseUrl ? { metaBaseUrl: options.metaBaseUrl } : {}),
+    ...(options.metaOrg ? { metaOrg: options.metaOrg } : {}),
     commandHandlers: {},
   };
 }
