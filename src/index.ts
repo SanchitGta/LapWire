@@ -1,4 +1,6 @@
 import { createAuthClient, type AuthClient } from "./auth.js";
+import { registerConfigHandlers } from "./config/index.js";
+import { registerLifecycleHandlers } from "./lifecycle/index.js";
 import { registerLinkHandlers, type LinkDependencies, type MetaAppLike } from "./link/index.js";
 import type { MetaClient } from "./metaClient.js";
 import { registerStatusHandlers } from "./status/index.js";
@@ -40,6 +42,18 @@ export function registerMetaHandlers(app: MetaAppLike, dependencies: RuntimeDepe
       metaBaseUrl: dependencies.metaBaseUrl,
       metaOrg: dependencies.metaOrg,
     });
+
+    registerLifecycleHandlers(app, {
+      ...dependencies,
+      metaBaseUrl: dependencies.metaBaseUrl,
+      metaOrg: dependencies.metaOrg,
+    });
+
+    registerConfigHandlers(app, {
+      ...dependencies,
+      metaBaseUrl: dependencies.metaBaseUrl,
+      metaOrg: dependencies.metaOrg,
+    });
   }
 
   app.command("/meta", async (args: MetaCommandArgs) => {
@@ -49,7 +63,7 @@ export function registerMetaHandlers(app: MetaAppLike, dependencies: RuntimeDepe
     if (!handler) {
       await args.ack();
       await args.respond({
-        text: "Available subcommands: link, whoami, unlink, fleet, status",
+        text: "Available subcommands: link, whoami, unlink, fleet, status, start, stop, rearm, config",
       });
       return;
     }
@@ -83,6 +97,8 @@ export function createRuntimeDependencies(options: CreateRuntimeOptions): Runtim
     metaBaseUrl: options.metaBaseUrl,
     metaOrg: options.metaOrg,
     now: options.now,
+    ...(options.metaBaseUrl ? { metaBaseUrl: options.metaBaseUrl } : {}),
+    ...(options.metaOrg ? { metaOrg: options.metaOrg } : {}),
     commandHandlers: {},
   };
 }
