@@ -254,9 +254,9 @@ export function createInitialState(): MockMindlapState {
       valid: '414141',
     },
     tokens: {
-      admin: 'mock-token-admin',
-      member: 'mock-token-member',
-      expiredAdmin: 'mock-token-admin-expired',
+      admin: createMockJwt({ sub: admin.id, email: admin.email, role: admin.role, exp: 1783036800 }),
+      member: createMockJwt({ sub: member.id, email: member.email, role: member.role, exp: 1783036800 }),
+      expiredAdmin: createMockJwt({ sub: admin.id, email: admin.email, role: admin.role, exp: 1719187200 }),
     },
     users: {
       admin,
@@ -404,6 +404,12 @@ export function createInitialState(): MockMindlapState {
   };
 }
 
+function createMockJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${header}.${body}.signature`;
+}
+
 async function handleRequest(context: RouteContext): Promise<void> {
   const { request, response, url, state } = context;
   const path = url.pathname;
@@ -429,7 +435,7 @@ async function handleRequest(context: RouteContext): Promise<void> {
   }
 
   if (method === 'GET' && path === '/api/auth/me') {
-    const auth = requireAuthHeader(request);
+    const auth = requireAuthHeaderWithState(state, request);
 
     if (!auth.ok) {
       writeGatewayError(response, auth.status, auth.code, auth.message);
@@ -711,27 +717,10 @@ function resolveOtpToken(state: MockMindlapState, email: string, otp: string): s
   return state.tokens.admin;
 }
 
-function requireAuthHeader(request: IncomingMessage):
-  | { ok: true; user: MockUser }
-  | { ok: false; status: number; code: string; message: string } {
-  const header = request.headers.authorization;
-  if (!header?.startsWith('Bearer ')) {
-    return {
-      ok: false,
-      status: 401,
-      code: 'unauthorized',
-      message: ERROR_MESSAGES.unauthorized,
-    };
-  }
-
-  const token = header.slice('Bearer '.length);
-  return resolveToken(token);
-}
-
 function requireMetaAdmin(context: RouteContext):
   | { ok: true; user: MockUser }
   | { ok: false; status: number; code: string; message: string } {
-  const auth = requireAuthHeader(context.request);
+  const auth = requireAuthHeaderWithState(context.state, context.request);
   if (!auth.ok) {
     return auth;
   }
@@ -748,32 +737,44 @@ function requireMetaAdmin(context: RouteContext):
   return auth;
 }
 
-function resolveToken(token: string):
+function requireAuthHeaderWithState(
+  state: MockMindlapState,
+  request: IncomingMessage,
+):
   | { ok: true; user: MockUser }
   | { ok: false; status: number; code: string; message: string } {
-  if (token === 'mock-token-admin') {
+  const header = request.headers.authorization;
+  if (!header?.startsWith('Bearer ')) {
     return {
-      ok: true,
-      user: {
-        id: 'usr-admin-1',
-        email: 'testuser@mindlap.dev',
-        role: 'admin',
-      },
+      ok: false,
+      status: 401,
+      code: 'unauthorized',
+      message: ERROR_MESSAGES.unauthorized,
     };
   }
 
-  if (token === 'mock-token-member') {
+  const token = header.slice('Bearer '.length);
+  return resolveToken(state, token);
+}
+
+function resolveToken(state: MockMindlapState, token: string):
+  | { ok: true; user: MockUser }
+  | { ok: false; status: number; code: string; message: string } {
+  if (token === state.tokens.admin) {
     return {
       ok: true,
-      user: {
-        id: 'usr-member-1',
-        email: 'member@acme.dev',
-        role: 'member',
-      },
+      user: clone(state.users.admin),
     };
   }
 
-  if (token === 'mock-token-admin-expired') {
+  if (token === state.tokens.member) {
+    return {
+      ok: true,
+      user: clone(state.users.member),
+    };
+  }
+
+  if (token === state.tokens.expiredAdmin) {
     return {
       ok: false,
       status: 401,
