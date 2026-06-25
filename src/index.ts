@@ -1,4 +1,7 @@
+import { fileURLToPath } from "node:url";
+import { config as loadEnv } from "dotenv";
 import { createAuthClient, type AuthClient } from "./auth.js";
+import { createApp } from "./app.js";
 import { registerLinkHandlers, type LinkDependencies, type MetaAppLike } from "./link/index.js";
 import type { MetaClient } from "./metaClient.js";
 import { registerStatusHandlers } from "./status/index.js";
@@ -87,4 +90,39 @@ export function createRuntimeDependencies(options: CreateRuntimeOptions): Runtim
     now: options.now,
     commandHandlers: {},
   };
+}
+
+async function main(): Promise<void> {
+  loadEnv();
+
+  const app = createApp();
+
+  const runtime = createRuntimeDependencies({
+    apiBase: process.env.MINDLAP_API_BASE ?? "",
+    dbPath: process.env.LAPWIRE_DB_PATH ?? "data/lapwire.db",
+    encryptionKey: process.env.LAPWIRE_ENCRYPTION_KEY ?? "",
+    metaBaseUrl: process.env.META_BASE_URL,
+    metaOrg: process.env.META_ORG,
+  });
+
+  // Bolt's App satisfies MetaAppLike structurally at runtime
+  registerMetaHandlers(app as unknown as MetaAppLike, runtime);
+
+  const shutdown = (): void => {
+    runtime.store.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  await app.start();
+  console.log("⚡ LapWire running in Socket Mode");
+}
+
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+  main().catch((err: unknown) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
