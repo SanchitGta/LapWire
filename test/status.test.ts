@@ -145,7 +145,7 @@ describe("status commands", () => {
     const resolvers = new Map<string, (status: FactoryStatus) => void>();
     const requestedIds: string[] = [];
 
-    const { app, runtime } = await boot({
+    const { _app, runtime } = await boot({
       metaClientFactory: ({ accessToken }) =>
         ({
           listProjects: async (org) => {
@@ -206,7 +206,7 @@ describe("status commands", () => {
   });
 
   it("renders a case-insensitive single-project detail card with repo, cloud, defaults, and actions", async () => {
-    const { app, runtime, server } = await boot();
+    const { _app, runtime, server } = await boot();
     runtime.store.putLink({
       slackUserId: "U_STATUS",
       mindlapUserId: server.state.users.admin.id,
@@ -240,7 +240,7 @@ describe("status commands", () => {
   });
 
   it("returns a friendly not-found message for an unknown project", async () => {
-    const { app, runtime, server } = await boot();
+    const { _app, runtime, server } = await boot();
     runtime.store.putLink({
       slackUserId: "U_STATUS",
       mindlapUserId: server.state.users.admin.id,
@@ -264,7 +264,7 @@ describe("status commands", () => {
   });
 
   it("surfaces admin_required for a linked member account", async () => {
-    const { app, runtime, server } = await boot();
+    const { _app, runtime, server } = await boot();
     runtime.store.putLink({
       slackUserId: "U_MEMBER",
       mindlapUserId: server.state.users.member.id,
@@ -289,7 +289,7 @@ describe("status commands", () => {
 
   it("prompts for linking when the caller is unlinked or expired without calling the gateway", async () => {
     let createdClients = 0;
-    const { app, runtime, server } = await boot({
+    const { _app, runtime, server } = await boot({
       metaClientFactory: () => {
         createdClients += 1;
         return {

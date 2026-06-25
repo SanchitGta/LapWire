@@ -1,226 +1,188 @@
 import { plainText } from "../blocks/common.js";
-import type { FactoryStatus } from "../metaClient.js";
 
-export const CONFIG_CALLBACK_IDS = {
-  repo: "cfg_repo",
-  defaults: "cfg_defaults",
-  env: "cfg_env",
-  credentials: "cfg_creds",
+export const CFG_REPO_CALLBACK_ID = "cfg_repo";
+export const CFG_DEFAULTS_CALLBACK_ID = "cfg_defaults";
+export const CFG_ENV_CALLBACK_ID = "cfg_env";
+export const CFG_CREDS_CALLBACK_ID = "cfg_creds";
+
+export const CFG_REPO_FIELDS = {
+  url: { blockId: "cfg_repo_url", actionId: "value" },
+  token: { blockId: "cfg_repo_token", actionId: "value" },
 } as const;
 
-export const CONFIG_BLOCK_IDS = {
-  repoUrl: "cfg_repo_url",
-  repoToken: "cfg_repo_token",
-  defaultsTool: "cfg_defaults_tool",
-  defaultsModel: "cfg_defaults_model",
-  envKey: "cfg_env_key",
-  envValue: "cfg_env_value",
-  envDelete: "cfg_env_delete",
-  credProvider: "cfg_cred_provider",
-  credToken: "cfg_cred_token",
-  credDelete: "cfg_cred_delete",
+export const CFG_DEFAULTS_FIELDS = {
+  tool: { blockId: "cfg_defaults_tool", actionId: "value" },
+  model: { blockId: "cfg_defaults_model", actionId: "value" },
 } as const;
 
-export type ConfigHubContext = {
+export const CFG_ENV_FIELDS = {
+  key: { blockId: "cfg_env_key", actionId: "value" },
+  value: { blockId: "cfg_env_value", actionId: "value" },
+} as const;
+
+export const CFG_CREDS_FIELDS = {
+  provider: { blockId: "cfg_creds_provider", actionId: "value" },
+  token: { blockId: "cfg_creds_token", actionId: "value" },
+  owner: { blockId: "cfg_creds_owner", actionId: "value" },
+} as const;
+
+export type ConfigModalMetadata = {
   channelId: string;
   messageTs?: string;
-  ts?: string;
   org: string;
   projectId: string;
   projectName: string;
 };
 
-type ViewStateValues = Record<
-  string,
-  Record<
-    string,
-    {
-      type?: string;
-      value?: string;
-      selected_option?: { value: string };
-      selected_options?: Array<{ value: string }>;
-    }
-  >
->;
-
-export function parseConfigHubContext(privateMetadata: string | undefined): ConfigHubContext {
-  if (!privateMetadata) {
-    throw new Error("Missing config hub context.");
-  }
-
-  return JSON.parse(privateMetadata) as ConfigHubContext;
-}
-
-export function buildRepoModal(status: FactoryStatus, ctx: ConfigHubContext) {
+export function buildRepoModal(currentUrl: string | null, metadata: ConfigModalMetadata) {
   return {
     type: "modal",
-    callback_id: CONFIG_CALLBACK_IDS.repo,
-    private_metadata: JSON.stringify(ctx),
+    callback_id: CFG_REPO_CALLBACK_ID,
+    private_metadata: JSON.stringify(metadata),
     title: plainText("Edit Repo"),
     submit: plainText("Save"),
     close: plainText("Cancel"),
     blocks: [
-      plainInputBlock(CONFIG_BLOCK_IDS.repoUrl, "value", "Repo URL", status.repo.url ?? undefined),
+      plainInputBlock({
+        blockId: CFG_REPO_FIELDS.url.blockId,
+        actionId: CFG_REPO_FIELDS.url.actionId,
+        label: "Repository URL",
+        initialValue: currentUrl ?? "",
+      }),
       {
         type: "input",
-        block_id: CONFIG_BLOCK_IDS.repoToken,
+        block_id: CFG_REPO_FIELDS.token.blockId,
         optional: true,
-        label: plainText("Access Token (leave blank to keep current)"),
+        label: plainText("Access token (leave blank to keep existing)"),
         element: {
           type: "plain_text_input",
-          action_id: "value",
+          action_id: CFG_REPO_FIELDS.token.actionId,
+          placeholder: plainText("token"),
         },
       },
     ],
   };
 }
 
-export function buildDefaultsModal(status: FactoryStatus, ctx: ConfigHubContext) {
+export function buildDefaultsModal(
+  currentTool: string | null,
+  currentModel: string | null,
+  metadata: ConfigModalMetadata,
+) {
   return {
     type: "modal",
-    callback_id: CONFIG_CALLBACK_IDS.defaults,
-    private_metadata: JSON.stringify(ctx),
+    callback_id: CFG_DEFAULTS_CALLBACK_ID,
+    private_metadata: JSON.stringify(metadata),
     title: plainText("Edit Defaults"),
     submit: plainText("Save"),
     close: plainText("Cancel"),
     blocks: [
-      plainInputBlock(CONFIG_BLOCK_IDS.defaultsTool, "value", "Tool", status.defaults.tool ?? undefined),
-      plainInputBlock(CONFIG_BLOCK_IDS.defaultsModel, "value", "Model", status.defaults.model ?? undefined),
+      plainInputBlock({
+        blockId: CFG_DEFAULTS_FIELDS.tool.blockId,
+        actionId: CFG_DEFAULTS_FIELDS.tool.actionId,
+        label: "Tool",
+        initialValue: currentTool ?? "",
+        optional: true,
+      }),
+      plainInputBlock({
+        blockId: CFG_DEFAULTS_FIELDS.model.blockId,
+        actionId: CFG_DEFAULTS_FIELDS.model.actionId,
+        label: "Model",
+        initialValue: currentModel ?? "",
+        optional: true,
+      }),
     ],
   };
 }
 
-export function buildEnvModal(ctx: ConfigHubContext) {
+export function buildEnvModal(metadata: ConfigModalMetadata) {
   return {
     type: "modal",
-    callback_id: CONFIG_CALLBACK_IDS.env,
-    private_metadata: JSON.stringify(ctx),
+    callback_id: CFG_ENV_CALLBACK_ID,
+    private_metadata: JSON.stringify(metadata),
     title: plainText("Manage Env"),
-    submit: plainText("Save"),
+    submit: plainText("Set"),
     close: plainText("Cancel"),
     blocks: [
-      plainInputBlock(CONFIG_BLOCK_IDS.envKey, "value", "Key"),
+      plainInputBlock({
+        blockId: CFG_ENV_FIELDS.key.blockId,
+        actionId: CFG_ENV_FIELDS.key.actionId,
+        label: "Key",
+      }),
       {
         type: "input",
-        block_id: CONFIG_BLOCK_IDS.envValue,
-        optional: true,
+        block_id: CFG_ENV_FIELDS.value.blockId,
         label: plainText("Value"),
         element: {
           type: "plain_text_input",
-          action_id: "value",
-        },
-      },
-      {
-        type: "input",
-        block_id: CONFIG_BLOCK_IDS.envDelete,
-        optional: true,
-        label: plainText("Delete?"),
-        element: {
-          type: "checkboxes",
-          action_id: "value",
-          options: [{ text: plainText("Delete this key"), value: "delete" }],
+          action_id: CFG_ENV_FIELDS.value.actionId,
+          placeholder: plainText("secret value — never shown after save"),
         },
       },
     ],
   };
 }
 
-export function buildCredentialsModal(ctx: ConfigHubContext) {
+export function buildCredsModal(metadata: ConfigModalMetadata) {
   return {
     type: "modal",
-    callback_id: CONFIG_CALLBACK_IDS.credentials,
-    private_metadata: JSON.stringify(ctx),
+    callback_id: CFG_CREDS_CALLBACK_ID,
+    private_metadata: JSON.stringify(metadata),
     title: plainText("Manage Credentials"),
-    submit: plainText("Save"),
+    submit: plainText("Add"),
     close: plainText("Cancel"),
     blocks: [
       {
         type: "input",
-        block_id: CONFIG_BLOCK_IDS.credProvider,
+        block_id: CFG_CREDS_FIELDS.provider.blockId,
         label: plainText("Provider"),
         element: {
           type: "static_select",
-          action_id: "value",
-          options: ["claude", "codex", "gemini", "opencode"].map((p) => ({
-            text: plainText(p),
-            value: p,
-          })),
+          action_id: CFG_CREDS_FIELDS.provider.actionId,
+          options: [
+            { text: plainText("claude"), value: "claude" },
+            { text: plainText("codex"), value: "codex" },
+            { text: plainText("gemini"), value: "gemini" },
+            { text: plainText("opencode"), value: "opencode" },
+          ],
         },
       },
       {
         type: "input",
-        block_id: CONFIG_BLOCK_IDS.credToken,
-        optional: true,
-        label: plainText("API Token (required when adding)"),
+        block_id: CFG_CREDS_FIELDS.token.blockId,
+        label: plainText("Token"),
         element: {
           type: "plain_text_input",
-          action_id: "value",
+          action_id: CFG_CREDS_FIELDS.token.actionId,
+          placeholder: plainText("token — never shown after save"),
         },
       },
-      {
-        type: "input",
-        block_id: CONFIG_BLOCK_IDS.credDelete,
+      plainInputBlock({
+        blockId: CFG_CREDS_FIELDS.owner.blockId,
+        actionId: CFG_CREDS_FIELDS.owner.actionId,
+        label: "Owner (optional)",
         optional: true,
-        label: plainText("Delete credential ID (leave blank to add)"),
-        element: {
-          type: "plain_text_input",
-          action_id: "value",
-        },
-      },
+      }),
     ],
   };
 }
 
-export function parseRepoSubmission(values: ViewStateValues) {
-  return {
-    url: readPlainValue(values, CONFIG_BLOCK_IDS.repoUrl, "value").trim(),
-    token: readPlainValue(values, CONFIG_BLOCK_IDS.repoToken, "value").trim() || undefined,
-  };
-}
-
-export function parseDefaultsSubmission(values: ViewStateValues) {
-  return {
-    tool: readPlainValue(values, CONFIG_BLOCK_IDS.defaultsTool, "value").trim() || undefined,
-    model: readPlainValue(values, CONFIG_BLOCK_IDS.defaultsModel, "value").trim() || undefined,
-  };
-}
-
-export function parseEnvSubmission(values: ViewStateValues) {
-  const key = readPlainValue(values, CONFIG_BLOCK_IDS.envKey, "value").trim();
-  const value = readPlainValue(values, CONFIG_BLOCK_IDS.envValue, "value").trim();
-  const shouldDelete = (
-    values[CONFIG_BLOCK_IDS.envDelete]?.["value"]?.selected_options ?? []
-  ).some((opt) => opt.value === "delete");
-
-  return { key, value, delete: shouldDelete };
-}
-
-export function parseCredentialsSubmission(values: ViewStateValues) {
-  const provider = values[CONFIG_BLOCK_IDS.credProvider]?.["value"]?.selected_option?.value ?? "";
-  const token = readPlainValue(values, CONFIG_BLOCK_IDS.credToken, "value").trim();
-  const deleteId = readPlainValue(values, CONFIG_BLOCK_IDS.credDelete, "value").trim() || undefined;
-
-  return { provider, token, deleteId };
-}
-
-function plainInputBlock(
-  blockId: string,
-  actionId: string,
-  label: string,
-  initialValue?: string,
-) {
+function plainInputBlock(options: {
+  blockId: string;
+  actionId: string;
+  label: string;
+  initialValue?: string;
+  optional?: boolean;
+}) {
   return {
     type: "input",
-    block_id: blockId,
-    label: plainText(label),
+    block_id: options.blockId,
+    ...(options.optional ? { optional: true } : {}),
+    label: plainText(options.label),
     element: {
       type: "plain_text_input",
-      action_id: actionId,
-      ...(initialValue ? { initial_value: initialValue } : {}),
+      action_id: options.actionId,
+      ...(options.initialValue ? { initial_value: options.initialValue } : {}),
     },
   };
-}
-
-function readPlainValue(values: ViewStateValues, blockId: string, actionId: string): string {
-  return values[blockId]?.[actionId]?.value ?? "";
 }

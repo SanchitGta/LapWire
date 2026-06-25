@@ -1,85 +1,84 @@
 import { ACTION_IDS, button, section } from "../blocks/common.js";
-import { createMetaClient } from "../metaClient.js";
-import type {
-  CredentialSummary,
-  DefaultsConfig,
-  EnvVarSummary,
-  FactoryStatus,
-  MemberSummary,
-  MetaClient,
-} from "../metaClient.js";
-import type {
-  ActionHandlerArgs,
-  LinkDependencies,
-  MetaAppLike,
-  ViewHandlerArgs,
-} from "../link/index.js";
+import { AdminRequiredError, InvalidTokenError, UnauthorizedError } from "../errors.js";
 import {
-  buildCredentialsModal,
+  createMetaClient,
+  type CredentialSummary,
+  type EnvVarSummary,
+  type FactoryStatus,
+  type MemberSummary,
+  type MetaClient,
+} from "../metaClient.js";
+import type { ActionHandlerArgs, LinkDependencies, MetaAppLike, ViewHandlerArgs } from "../link/index.js";
+import type { LinkStore, StoredLink } from "../store.js";
+import {
+  buildCredsModal,
   buildDefaultsModal,
   buildEnvModal,
   buildRepoModal,
-  CONFIG_BLOCK_IDS,
-  CONFIG_CALLBACK_IDS,
-  parseConfigHubContext,
-  parseCredentialsSubmission,
-  parseDefaultsSubmission,
-  parseEnvSubmission,
-  parseRepoSubmission,
-  type ConfigHubContext,
+  CFG_CREDS_CALLBACK_ID,
+  CFG_CREDS_FIELDS,
+  CFG_DEFAULTS_CALLBACK_ID,
+  CFG_DEFAULTS_FIELDS,
+  CFG_ENV_CALLBACK_ID,
+  CFG_ENV_FIELDS,
+  CFG_REPO_CALLBACK_ID,
+  CFG_REPO_FIELDS,
+  type ConfigModalMetadata,
 } from "./modals.js";
 
 export type ConfigDependencies = LinkDependencies & {
   metaBaseUrl: string;
   metaOrg: string;
+  metaClientFactory?: (options: { accessToken: string }) => MetaClient;
 };
 
-type HubActionValue = {
-  org: string;
-  projectId: string;
-  projectName: string;
+type HubData = {
+  status: FactoryStatus;
+  env: EnvVarSummary[];
+  credentials: CredentialSummary[];
+  members: MemberSummary[];
 };
 
 export function registerConfigHandlers(app: MetaAppLike, dependencies: ConfigDependencies): void {
   dependencies.commandHandlers.config = async (args) => {
     await args.ack();
 
-    const parts = args.command.text.trim().split(/\s+/).filter(Boolean);
-    const projectName = parts[1] ?? "";
-
+    const projectName = readProjectArg(args.command.text);
     if (!projectName) {
       await args.respond({ text: "Usage: /meta config <project>" });
       return;
     }
 
-    const linked = dependencies.store.getLink(args.command.user_id);
-    if (!linked || isExpired(linked.exp, dependencies.now)) {
-      await args.respond({ text: "Not linked — run /meta link" });
+    const linked = getLinkedUser(dependencies.store, args.command.user_id, dependencies.now);
+    if (!linked.ok) {
+      await args.respond({ text: linked.message });
       return;
     }
 
     try {
-      const metaClient = createClient(dependencies, linked.accessToken);
-      const project = await resolveProjectByName(metaClient, dependencies.metaOrg, projectName);
+      const client = createClient(dependencies, linked.link.accessToken);
+      const projects = await client.listProjects(dependencies.metaOrg);
+      const project = projects.find((p) => p.name.toLowerCase() === projectName.toLowerCase());
 
-      const [status, defaults, env, credentials, members] = await Promise.all([
-        metaClient.getFactoryStatus(project.id, dependencies.metaOrg),
-        metaClient.getDefaults(project.id),
-        metaClient.listEnv(project.id),
-        metaClient.listCredentials(project.id),
-        metaClient.listMembers(project.id),
-      ]);
+      if (!project) {
+        await args.respond({
+          text: `Project "${projectName}" was not found in ${dependencies.metaOrg}.`,
+        });
+        return;
+      }
 
-      const ctx: ConfigHubContext = {
-        channelId: args.command.channel_id,
-        org: dependencies.metaOrg,
-        projectId: project.id,
-        projectName: project.name,
-      };
+      const hub = await fetchHubData(client, project.id, dependencies.metaOrg);
 
-      await args.respond({
-        text: `${project.name} config hub`,
-        blocks: buildConfigHubCard(status, defaults, env, credentials, members, ctx),
+      await (args.client.chat as { postEphemeral: (payload: unknown) => Promise<unknown> }).postEphemeral({
+        channel: args.command.channel_id,
+        user: args.command.user_id,
+        text: `Config hub for ${project.name}`,
+        blocks: buildConfigHubBlocks(hub, {
+          channelId: args.command.channel_id,
+          org: dependencies.metaOrg,
+          projectId: project.id,
+          projectName: project.name,
+        }),
       });
     } catch (error) {
       await args.respond({ text: toUserMessage(error) });
@@ -90,15 +89,14 @@ export function registerConfigHandlers(app: MetaAppLike, dependencies: ConfigDep
     await args.ack();
 
     try {
-      const value = readActionValue(args.action.value);
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
-      const status = await metaClient.getFactoryStatus(value.projectId, value.org);
-      const ctx = buildCtxFromAction(args, value);
+      const metadata = readActionMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
+      const repo = await client.getRepo(metadata.projectId);
 
       await args.client.views.open({
         trigger_id: args.body.trigger_id,
-        view: buildRepoModal(status, ctx),
+        view: buildRepoModal(repo.url, metadata),
       });
     } catch (error) {
       await postEphemeralError(args, error);
@@ -109,13 +107,20 @@ export function registerConfigHandlers(app: MetaAppLike, dependencies: ConfigDep
     await args.ack();
 
     try {
-      const value = readActionValue(args.action.value);
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
-      const status = await metaClient.getFactoryStatus(value.projectId, value.org);
+      const metadata = readActionMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
+      const hub = await fetchHubData(client, metadata.projectId, metadata.org);
 
-      await metaClient.updateCloud(value.projectId, { enabled: !status.cloud_enabled });
-      await refreshHub(args, metaClient, value);
+      await client.updateCloud(metadata.projectId, { enabled: !hub.status.cloud_enabled });
+      const refreshed = await fetchHubData(client, metadata.projectId, metadata.org);
+
+      await args.client.chat.update?.({
+        channel: args.body.channel?.id,
+        ts: args.body.message?.ts,
+        text: `Config hub for ${metadata.projectName}`,
+        blocks: buildConfigHubBlocks(refreshed, metadata),
+      });
     } catch (error) {
       await postEphemeralError(args, error);
     }
@@ -125,15 +130,14 @@ export function registerConfigHandlers(app: MetaAppLike, dependencies: ConfigDep
     await args.ack();
 
     try {
-      const value = readActionValue(args.action.value);
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
-      const status = await metaClient.getFactoryStatus(value.projectId, value.org);
-      const ctx = buildCtxFromAction(args, value);
+      const metadata = readActionMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
+      const defaults = await client.getDefaults(metadata.projectId);
 
       await args.client.views.open({
         trigger_id: args.body.trigger_id,
-        view: buildDefaultsModal(status, ctx),
+        view: buildDefaultsModal(defaults.tool, defaults.model, metadata),
       });
     } catch (error) {
       await postEphemeralError(args, error);
@@ -144,13 +148,12 @@ export function registerConfigHandlers(app: MetaAppLike, dependencies: ConfigDep
     await args.ack();
 
     try {
-      const value = readActionValue(args.action.value);
-      requireLinkedUser(dependencies, args.body.user.id);
-      const ctx = buildCtxFromAction(args, value);
+      const metadata = readActionMetadata(args);
+      requireLinked(dependencies, args.body.user.id);
 
       await args.client.views.open({
         trigger_id: args.body.trigger_id,
-        view: buildEnvModal(ctx),
+        view: buildEnvModal(metadata),
       });
     } catch (error) {
       await postEphemeralError(args, error);
@@ -161,278 +164,238 @@ export function registerConfigHandlers(app: MetaAppLike, dependencies: ConfigDep
     await args.ack();
 
     try {
-      const value = readActionValue(args.action.value);
-      requireLinkedUser(dependencies, args.body.user.id);
-      const ctx = buildCtxFromAction(args, value);
+      const metadata = readActionMetadata(args);
+      requireLinked(dependencies, args.body.user.id);
 
       await args.client.views.open({
         trigger_id: args.body.trigger_id,
-        view: buildCredentialsModal(ctx),
+        view: buildCredsModal(metadata),
       });
     } catch (error) {
       await postEphemeralError(args, error);
     }
   });
 
-  app.view(CONFIG_CALLBACK_IDS.repo, async (args) => {
-    const ctx = parseConfigHubContext(args.body.view.private_metadata);
-    const submission = parseRepoSubmission(args.body.view.state.values);
-
-    if (!submission.url) {
-      await args.ack({
-        response_action: "errors",
-        errors: { [CONFIG_BLOCK_IDS.repoUrl]: "Repo URL is required." },
-      });
-      return;
-    }
-
+  app.view(CFG_REPO_CALLBACK_ID, async (args) => {
     try {
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
+      const metadata = readViewMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
 
-      await metaClient.updateRepo(ctx.projectId, submission);
+      const url = readPlain(args, CFG_REPO_FIELDS.url.blockId, CFG_REPO_FIELDS.url.actionId).trim();
+      const token = readPlain(args, CFG_REPO_FIELDS.token.blockId, CFG_REPO_FIELDS.token.actionId).trim() || undefined;
+
+      await client.updateRepo(metadata.projectId, { url, ...(token ? { token } : {}) });
+      const refreshed = await fetchHubData(client, metadata.projectId, metadata.org);
+
       await args.ack();
-      await refreshHubFromModal(args, metaClient, ctx);
+      await updateHubFromModal(args, refreshed, metadata);
     } catch (error) {
-      await args.ack({
-        response_action: "errors",
-        errors: { [CONFIG_BLOCK_IDS.repoUrl]: toUserMessage(error) },
-      });
+      await ackWithError(args, CFG_REPO_FIELDS.url.blockId, error);
     }
   });
 
-  app.view(CONFIG_CALLBACK_IDS.defaults, async (args) => {
-    const ctx = parseConfigHubContext(args.body.view.private_metadata);
-    const submission = parseDefaultsSubmission(args.body.view.state.values);
-
+  app.view(CFG_DEFAULTS_CALLBACK_ID, async (args) => {
     try {
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
+      const metadata = readViewMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
 
-      await metaClient.updateDefaults(ctx.projectId, submission);
+      const tool = readPlain(args, CFG_DEFAULTS_FIELDS.tool.blockId, CFG_DEFAULTS_FIELDS.tool.actionId).trim() || undefined;
+      const model = readPlain(args, CFG_DEFAULTS_FIELDS.model.blockId, CFG_DEFAULTS_FIELDS.model.actionId).trim() || undefined;
+
+      await client.updateDefaults(metadata.projectId, { tool, model });
+      const refreshed = await fetchHubData(client, metadata.projectId, metadata.org);
+
       await args.ack();
-      await refreshHubFromModal(args, metaClient, ctx);
+      await updateHubFromModal(args, refreshed, metadata);
     } catch (error) {
-      await args.ack({
-        response_action: "errors",
-        errors: { [CONFIG_BLOCK_IDS.defaultsTool]: toUserMessage(error) },
-      });
+      await ackWithError(args, CFG_DEFAULTS_FIELDS.tool.blockId, error);
     }
   });
 
-  app.view(CONFIG_CALLBACK_IDS.env, async (args) => {
-    const ctx = parseConfigHubContext(args.body.view.private_metadata);
-    const submission = parseEnvSubmission(args.body.view.state.values);
-
-    if (!submission.key) {
-      await args.ack({
-        response_action: "errors",
-        errors: { [CONFIG_BLOCK_IDS.envKey]: "Key is required." },
-      });
-      return;
-    }
-
+  app.view(CFG_ENV_CALLBACK_ID, async (args) => {
     try {
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
+      const metadata = readViewMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
 
-      if (submission.delete) {
-        await metaClient.deleteEnv(ctx.projectId, submission.key);
-      } else {
-        await metaClient.setEnv(ctx.projectId, submission.key, { value: submission.value });
-      }
+      const key = readPlain(args, CFG_ENV_FIELDS.key.blockId, CFG_ENV_FIELDS.key.actionId).trim();
+      const value = readPlain(args, CFG_ENV_FIELDS.value.blockId, CFG_ENV_FIELDS.value.actionId);
+
+      await client.setEnv(metadata.projectId, key, { value });
+      const refreshed = await fetchHubData(client, metadata.projectId, metadata.org);
 
       await args.ack();
-      await refreshHubFromModal(args, metaClient, ctx);
+      await updateHubFromModal(args, refreshed, metadata);
     } catch (error) {
-      await args.ack({
-        response_action: "errors",
-        errors: { [CONFIG_BLOCK_IDS.envKey]: toUserMessage(error) },
-      });
+      await ackWithError(args, CFG_ENV_FIELDS.key.blockId, error);
     }
   });
 
-  app.view(CONFIG_CALLBACK_IDS.credentials, async (args) => {
-    const ctx = parseConfigHubContext(args.body.view.private_metadata);
-    const submission = parseCredentialsSubmission(args.body.view.state.values);
-
+  app.view(CFG_CREDS_CALLBACK_ID, async (args) => {
     try {
-      const linked = requireLinkedUser(dependencies, args.body.user.id);
-      const metaClient = createClient(dependencies, linked.accessToken);
+      const metadata = readViewMetadata(args);
+      const linked = requireLinked(dependencies, args.body.user.id);
+      const client = createClient(dependencies, linked.accessToken);
 
-      if (submission.deleteId) {
-        await metaClient.deleteCredential(ctx.projectId, submission.deleteId);
-      } else {
-        await metaClient.createCredential(ctx.projectId, {
-          provider: submission.provider,
-          token: submission.token,
-        });
-      }
+      const provider =
+        args.body.view.state.values[CFG_CREDS_FIELDS.provider.blockId]?.[CFG_CREDS_FIELDS.provider.actionId]
+          ?.selected_option?.value ?? "";
+      const token = readPlain(args, CFG_CREDS_FIELDS.token.blockId, CFG_CREDS_FIELDS.token.actionId);
+      const owner = readPlain(args, CFG_CREDS_FIELDS.owner.blockId, CFG_CREDS_FIELDS.owner.actionId).trim() || undefined;
+
+      await client.createCredential(metadata.projectId, { provider, token, ...(owner ? { owner } : {}) });
+      const refreshed = await fetchHubData(client, metadata.projectId, metadata.org);
 
       await args.ack();
-      await refreshHubFromModal(args, metaClient, ctx);
+      await updateHubFromModal(args, refreshed, metadata);
     } catch (error) {
-      await args.ack({
-        response_action: "errors",
-        errors: { [CONFIG_BLOCK_IDS.credProvider]: toUserMessage(error) },
-      });
+      await ackWithError(args, CFG_CREDS_FIELDS.provider.blockId, error);
     }
   });
 }
 
-function buildConfigHubCard(
-  status: FactoryStatus,
-  defaults: DefaultsConfig,
-  env: EnvVarSummary[],
-  credentials: CredentialSummary[],
-  members: MemberSummary[],
-  ctx: ConfigHubContext,
-): unknown[] {
+export function buildConfigHubBlocks(
+  hub: HubData,
+  metadata: ConfigModalMetadata,
+) {
   const actionValue = JSON.stringify({
-    org: ctx.org,
-    projectId: ctx.projectId,
-    projectName: ctx.projectName,
-  } satisfies HubActionValue);
+    projectId: metadata.projectId,
+    projectName: metadata.projectName,
+    org: metadata.org,
+    channelId: metadata.channelId ?? "",
+    messageTs: metadata.messageTs,
+  });
 
-  const credSet = new Set(credentials.map((c) => c.provider));
-  const credStatus = (["claude", "codex", "gemini", "opencode"] as const)
-    .map((p) => `${p} ${credSet.has(p) ? "✓" : "–"}`)
-    .join(" ");
-
-  const adminCount = members.filter((m) => m.role === "admin").length;
-  const memberCount = members.filter((m) => m.role === "member").length;
-  const envCount = env.length;
+  const credsSummary =
+    hub.credentials.length > 0
+      ? hub.credentials.map((c) => `${c.provider}✓`).join(" ")
+      : "none";
 
   return [
-    section(`*${ctx.projectName}* config hub`),
-    section(
-      `*Repo:* ${status.repo.url ?? "—"} (token ${status.repo.token_set ? "set" : "not set"})`,
-      { accessory: button({ actionId: ACTION_IDS.editRepo, text: "Edit Repo", value: actionValue }) },
-    ),
-    section(
-      `*Cloud:* ${status.cloud_enabled ? "🟢 enabled" : "⚪ disabled"}`,
-      { accessory: button({ actionId: ACTION_IDS.toggleCloud, text: "Toggle Cloud", value: actionValue }) },
-    ),
-    section(
-      `*Defaults:* ${defaults.tool ?? "—"} · ${defaults.model ?? "—"}`,
-      { accessory: button({ actionId: ACTION_IDS.editDefaults, text: "Edit Defaults", value: actionValue }) },
-    ),
-    section(
-      `*Env:* ${envCount} var${envCount === 1 ? "" : "s"} set`,
-      { accessory: button({ actionId: ACTION_IDS.manageEnv, text: "Manage Env", value: actionValue }) },
-    ),
-    section(
-      `*Credentials:* ${credStatus}`,
-      { accessory: button({ actionId: ACTION_IDS.manageCredentials, text: "Manage Creds", value: actionValue }) },
-    ),
-    section(
-      `*Members:* ${members.length} total · ${adminCount} admin · ${memberCount} member`,
-    ),
+    section(`*Config hub* — \`${metadata.projectName}\``),
+    section("*Repo*", {
+      fields: [
+        hub.status.repo.url ? `<${hub.status.repo.url}|${hub.status.repo.url}>` : "not set",
+        `token: ${hub.status.repo.token_set ? "set" : "not set"}`,
+      ],
+      accessory: button({ actionId: ACTION_IDS.editRepo, text: "Edit", value: actionValue }),
+    }),
+    section(`*Cloud*  ${hub.status.cloud_enabled ? "🟢 enabled" : "⚪ off"}`, {
+      accessory: button({ actionId: ACTION_IDS.toggleCloud, text: "Toggle", value: actionValue }),
+    }),
+    section("*Defaults*", {
+      fields: [
+        `tool: ${hub.status.defaults.tool ?? "—"}`,
+        `model: ${hub.status.defaults.model ?? "—"}`,
+      ],
+      accessory: button({ actionId: ACTION_IDS.editDefaults, text: "Edit", value: actionValue }),
+    }),
+    section(`*Env*  ${hub.env.length} key(s)`, {
+      accessory: button({ actionId: ACTION_IDS.manageEnv, text: "Manage", value: actionValue }),
+    }),
+    section(`*Credentials*  ${credsSummary}`, {
+      accessory: button({ actionId: ACTION_IDS.manageCredentials, text: "Manage", value: actionValue }),
+    }),
+    section(`*Members* (view only)  ${hub.members.length} member(s)`, {
+      fields: hub.members.map((m) => `${m.email} — ${m.role}`),
+    }),
   ];
 }
 
-async function refreshHub(
-  args: ActionHandlerArgs,
-  metaClient: MetaClient,
-  value: HubActionValue,
-): Promise<void> {
-  const ctx: ConfigHubContext = {
-    channelId: args.body.channel?.id ?? "",
-    messageTs: args.body.message?.ts,
-    org: value.org,
-    projectId: value.projectId,
-    projectName: value.projectName,
-  };
-
-  const [status, defaults, env, credentials, members] = await Promise.all([
-    metaClient.getFactoryStatus(value.projectId, value.org),
-    metaClient.getDefaults(value.projectId),
-    metaClient.listEnv(value.projectId),
-    metaClient.listCredentials(value.projectId),
-    metaClient.listMembers(value.projectId),
+async function fetchHubData(client: MetaClient, projectId: string, org: string): Promise<HubData> {
+  const [status, env, credentials, members] = await Promise.all([
+    client.getFactoryStatus(projectId, org),
+    client.listEnv(projectId),
+    client.listCredentials(projectId),
+    client.listMembers(projectId),
   ]);
 
-  await args.client.chat.update?.({
-    channel: ctx.channelId,
-    ts: ctx.messageTs,
-    text: `${value.projectName} config hub`,
-    blocks: buildConfigHubCard(status, defaults, env, credentials, members, ctx),
-  });
-}
-
-async function refreshHubFromModal(
-  args: ViewHandlerArgs,
-  metaClient: MetaClient,
-  ctx: ConfigHubContext,
-): Promise<void> {
-  if (!ctx.channelId || !ctx.messageTs) {
-    return;
-  }
-
-  const [status, defaults, env, credentials, members] = await Promise.all([
-    metaClient.getFactoryStatus(ctx.projectId, ctx.org),
-    metaClient.getDefaults(ctx.projectId),
-    metaClient.listEnv(ctx.projectId),
-    metaClient.listCredentials(ctx.projectId),
-    metaClient.listMembers(ctx.projectId),
-  ]);
-
-  await args.client.chat.update?.({
-    channel: ctx.channelId,
-    ts: ctx.messageTs,
-    text: `${ctx.projectName} config hub`,
-    blocks: buildConfigHubCard(status, defaults, env, credentials, members, ctx),
-  });
+  return { status, env, credentials, members };
 }
 
 function createClient(dependencies: ConfigDependencies, accessToken: string): MetaClient {
+  if (dependencies.metaClientFactory) {
+    return dependencies.metaClientFactory({ accessToken });
+  }
+
   return createMetaClient({
     baseUrl: dependencies.metaBaseUrl,
     getAccessToken: () => accessToken,
   });
 }
 
-async function resolveProjectByName(metaClient: MetaClient, org: string, projectName: string) {
-  const projects = await metaClient.listProjects(org);
-  const match = projects.find((p) => p.name.toLowerCase() === projectName.toLowerCase());
+function getLinkedUser(
+  store: LinkStore,
+  slackUserId: string,
+  now?: () => Date,
+): { ok: true; link: StoredLink } | { ok: false; message: string } {
+  const link = store.getLink(slackUserId);
 
-  if (!match) {
-    throw new Error(`Project "${projectName}" not found.`);
+  if (!link) {
+    return { ok: false, message: "Not linked — run /meta link" };
   }
 
-  return match;
-}
-
-function requireLinkedUser(dependencies: ConfigDependencies, slackUserId: string) {
-  const linked = dependencies.store.getLink(slackUserId);
-  if (!linked || isExpired(linked.exp, dependencies.now)) {
-    throw new Error("Not linked — run /meta link");
+  const nowSeconds = Math.floor((now ?? (() => new Date()))().getTime() / 1000);
+  if (link.exp <= nowSeconds) {
+    return { ok: false, message: "⚠ link expired — run /meta link" };
   }
 
-  return linked;
+  return { ok: true, link };
 }
 
-function isExpired(exp: number, nowProvider?: () => Date): boolean {
-  const nowSeconds = Math.floor((nowProvider ?? (() => new Date()))().getTime() / 1000);
-  return exp <= nowSeconds;
+function requireLinked(dependencies: ConfigDependencies, slackUserId: string): StoredLink {
+  const result = getLinkedUser(dependencies.store, slackUserId, dependencies.now);
+  if (!result.ok) {
+    throw new Error(result.message);
+  }
+
+  return result.link;
 }
 
-function buildCtxFromAction(args: ActionHandlerArgs, value: HubActionValue): ConfigHubContext {
+function readProjectArg(commandText: string): string {
+  const [, ...rest] = commandText.trim().split(/\s+/);
+  return rest.join(" ").trim();
+}
+
+function readActionMetadata(args: ActionHandlerArgs): ConfigModalMetadata {
+  const raw = args.action.value ?? "{}";
+  const parsed = JSON.parse(raw) as Partial<ConfigModalMetadata & { channelId: string; messageTs: string }>;
+
   return {
-    channelId: args.body.channel?.id ?? "",
-    messageTs: args.body.message?.ts,
-    org: value.org,
-    projectId: value.projectId,
-    projectName: value.projectName,
+    channelId: args.body.channel?.id ?? parsed.channelId ?? "",
+    messageTs: args.body.message?.ts ?? parsed.messageTs,
+    org: parsed.org ?? "",
+    projectId: parsed.projectId ?? "",
+    projectName: parsed.projectName ?? "",
   };
 }
 
-function readActionValue(value: string | undefined): HubActionValue {
-  if (!value) {
-    throw new Error("Missing config action payload.");
+function readViewMetadata(args: ViewHandlerArgs): ConfigModalMetadata {
+  const raw = args.body.view.private_metadata ?? "{}";
+  return JSON.parse(raw) as ConfigModalMetadata;
+}
+
+function readPlain(args: ViewHandlerArgs, blockId: string, actionId: string): string {
+  return args.body.view.state.values[blockId]?.[actionId]?.value ?? "";
+}
+
+async function updateHubFromModal(
+  args: ViewHandlerArgs,
+  hub: HubData,
+  metadata: ConfigModalMetadata,
+): Promise<void> {
+  if (!metadata.channelId || !metadata.messageTs) {
+    return;
   }
 
-  return JSON.parse(value) as HubActionValue;
+  await args.client.chat.update?.({
+    channel: metadata.channelId,
+    ts: metadata.messageTs,
+    text: `Config hub for ${metadata.projectName}`,
+    blocks: buildConfigHubBlocks(hub, metadata),
+  });
 }
 
 async function postEphemeralError(args: ActionHandlerArgs, error: unknown): Promise<void> {
@@ -443,6 +406,23 @@ async function postEphemeralError(args: ActionHandlerArgs, error: unknown): Prom
   });
 }
 
+async function ackWithError(args: ViewHandlerArgs, blockId: string, error: unknown): Promise<void> {
+  await args.ack({
+    response_action: "errors",
+    errors: {
+      [blockId]: toUserMessage(error),
+    },
+  });
+}
+
 function toUserMessage(error: unknown): string {
+  if (
+    error instanceof UnauthorizedError ||
+    error instanceof InvalidTokenError ||
+    error instanceof AdminRequiredError
+  ) {
+    return error.message;
+  }
+
   return error instanceof Error ? error.message : "Unable to complete config action.";
 }

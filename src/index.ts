@@ -1,6 +1,6 @@
 import { createAuthClient, type AuthClient } from "./auth.js";
-import { registerConfigHandlers } from "./config/index.js";
-import { registerLifecycleHandlers } from "./lifecycle/index.js";
+import { registerConfigHandlers, type ConfigDependencies } from "./config/index.js";
+import { registerLifecycleHandlers, type LifecycleDependencies } from "./lifecycle/index.js";
 import { registerLinkHandlers, type LinkDependencies, type MetaAppLike } from "./link/index.js";
 import type { MetaClient } from "./metaClient.js";
 import { registerStatusHandlers } from "./status/index.js";
@@ -37,23 +37,15 @@ export function registerMetaHandlers(app: MetaAppLike, dependencies: RuntimeDepe
   registerLinkHandlers(app, dependencies);
 
   if (dependencies.metaBaseUrl && dependencies.metaOrg) {
-    registerStatusHandlers(app, {
+    const metaDeps = {
       ...dependencies,
       metaBaseUrl: dependencies.metaBaseUrl,
       metaOrg: dependencies.metaOrg,
-    });
+    };
 
-    registerLifecycleHandlers(app, {
-      ...dependencies,
-      metaBaseUrl: dependencies.metaBaseUrl,
-      metaOrg: dependencies.metaOrg,
-    });
-
-    registerConfigHandlers(app, {
-      ...dependencies,
-      metaBaseUrl: dependencies.metaBaseUrl,
-      metaOrg: dependencies.metaOrg,
-    });
+    registerStatusHandlers(app, metaDeps);
+    registerLifecycleHandlers(app, metaDeps as typeof metaDeps & LifecycleDependencies);
+    registerConfigHandlers(app, metaDeps as typeof metaDeps & ConfigDependencies);
   }
 
   app.command("/meta", async (args: MetaCommandArgs) => {
