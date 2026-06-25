@@ -4,6 +4,8 @@ import type { MetaClient } from "./metaClient.js";
 import { registerStatusHandlers } from "./status/index.js";
 import { createLinkStore, type LinkStore } from "./store.js";
 
+export { loadConfig, type LapWireConfig } from "./config/lapwire.js";
+
 export type MetaCommandArgs = {
   ack: () => Promise<void> | void;
   respond: (message: unknown) => Promise<void> | void;
